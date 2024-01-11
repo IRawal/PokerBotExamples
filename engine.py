@@ -310,6 +310,7 @@ class Game():
     def __init__(self):
         self.log = ['6.176 MIT Pokerbots - ' + PLAYER_1_NAME + ' vs ' + PLAYER_2_NAME]
         self.player_messages = [[], []]
+        self.delta_list = []
 
     def log_round_state(self, players, round_state):
         '''
@@ -406,15 +407,18 @@ class Game():
         for player in players:
             player.build()
             player.run()
+        # for i in range(0, 1000):
         for round_num in range(1, NUM_ROUNDS + 1):
             self.log.append('')
             self.log.append('Round #' + str(round_num) + STATUS(players))
-            print('Round #' + str(round_num) + STATUS(players))
+                # print('Round #' + str(round_num) + STATUS(players))
             self.run_round(players)
             players = players[::-1]
+        print(str(abs(players[0].bankroll - players[1].bankroll)))
+            # players[0].bankroll = 0
+            # players[1].bankroll = 0
         self.log.append('')
         self.log.append('Final' + STATUS(players))
-        print('Final' + STATUS(players))
         for player in players:
             player.stop()
         name = GAME_LOG_FILENAME + '.txt'
