@@ -1,0 +1,8 @@
+version: "3"
+services:
+  poker_bot:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "80:80"

@@ -50,11 +50,35 @@ STATUS = lambda players: ''.join([PVALUE(p.name, p.bankroll) for p in players])
 class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks', 'hands', 'deck', 'previous_state'])):
     '''
     Encodes the game tree for one round of poker.
-    '''
 
+    Attributes:
+        button (int): The position of the button (dealer) in the round.
+        street (int): The current street (round) of the game.
+        pips (list): The amount of chips contributed by each player in the current street.
+        stacks (list): The remaining stack sizes of each player.
+        hands (list): The hands of each player.
+        deck (Deck): The deck of cards used in the game.
+        previous_state (RoundState): The previous state of the game tree.
+
+    Methods:
+        showdown(): Compares the players' hands and computes payoffs.
+        legal_actions(): Returns a set of the active player's legal moves.
+        raise_bounds(): Returns the minimum and maximum legal raises.
+        proceed_street(): Advances the game tree to the next round of betting.
+        proceed(action): Advances the game tree by one action performed by the active player.
+    '''
+    
     def showdown(self):
         '''
         Compares the players' hands and computes payoffs.
+
+        This method evaluates the players' hands using the `eval7` library and computes the payoffs based on the scores.
+        If player 0 has a higher score than player 1, player 1 loses the difference between their stack and the starting stack.
+        If player 1 has a higher score than player 0, player 0 loses the difference between their stack and the starting stack.
+        If both players have the same score, the pot is split equally between them.
+
+        Returns:
+            TerminalState: The terminal state object containing the payoffs and the current game state.
         '''
         score0 = eval7.evaluate(self.deck.peek(5) + self.hands[0])
         score1 = eval7.evaluate(self.deck.peek(5) + self.hands[1])
@@ -139,6 +163,23 @@ class Player():
     '''
 
     def __init__(self, name, path):
+        '''
+        Initializes a Player object.
+
+        Args:
+            name (str): The name of the player.
+            path (str): The path to the player's pokerbot.
+
+        Attributes:
+            name (str): The name of the player.
+            path (str): The path to the player's pokerbot.
+            game_clock (float): The remaining time for the player's turn.
+            bankroll (int): The player's bankroll.
+            commands (dict): The commands to build and run the pokerbot.
+            bot_subprocess (subprocess.Popen): The subprocess running the pokerbot.
+            socketfile (socket.SocketIO): The socket connection to the pokerbot.
+            bytes_queue (Queue): A queue to store the output bytes from the pokerbot.
+        '''
         self.name = name
         self.path = path
         self.game_clock = STARTING_GAME_CLOCK
@@ -149,37 +190,45 @@ class Player():
         self.bytes_queue = Queue()
 
     def build(self):
-        '''
-        Loads the commands file and builds the pokerbot.
-        '''
-        try:
-            with open(self.path + '/commands.json', 'r') as json_file:
-                commands = json.load(json_file)
-            if ('build' in commands and 'run' in commands and
-                    isinstance(commands['build'], list) and
-                    isinstance(commands['run'], list)):
-                self.commands = commands
-            else:
-                print(self.name, 'commands.json missing command')
-        except FileNotFoundError:
-            print(self.name, 'commands.json not found - check PLAYER_PATH')
-        except json.decoder.JSONDecodeError:
-            print(self.name, 'commands.json misformatted')
-        if self.commands is not None and len(self.commands['build']) > 0:
+            '''
+            Loads the commands file and builds the pokerbot.
+
+            Raises:
+                FileNotFoundError: If the commands.json file is not found.
+                json.decoder.JSONDecodeError: If the commands.json file is misformatted.
+                subprocess.TimeoutExpired: If the build process times out.
+                TypeError: If the build command is misformatted.
+                ValueError: If the build command is misformatted.
+                OSError: If the build process fails.
+            '''
             try:
-                proc = subprocess.run(self.commands['build'],
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                      cwd=self.path, timeout=BUILD_TIMEOUT, check=False)
-                self.bytes_queue.put(proc.stdout)
-            except subprocess.TimeoutExpired as timeout_expired:
-                error_message = 'Timed out waiting for ' + self.name + ' to build'
-                print(error_message)
-                self.bytes_queue.put(timeout_expired.stdout)
-                self.bytes_queue.put(error_message.encode())
-            except (TypeError, ValueError):
-                print(self.name, 'build command misformatted')
-            except OSError:
-                print(self.name, 'build failed - check "build" in commands.json')
+                with open(self.path + '/commands.json', 'r') as json_file:
+                    commands = json.load(json_file)
+                if ('build' in commands and 'run' in commands and
+                        isinstance(commands['build'], list) and
+                        isinstance(commands['run'], list)):
+                    self.commands = commands
+                else:
+                    print(self.name, 'commands.json missing command')
+            except FileNotFoundError:
+                print(self.name, 'commands.json not found - check PLAYER_PATH')
+            except json.decoder.JSONDecodeError:
+                print(self.name, 'commands.json misformatted')
+            if self.commands is not None and len(self.commands['build']) > 0:
+                try:
+                    proc = subprocess.run(self.commands['build'],
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          cwd=self.path, timeout=BUILD_TIMEOUT, check=False)
+                    self.bytes_queue.put(proc.stdout)
+                except subprocess.TimeoutExpired as timeout_expired:
+                    error_message = 'Timed out waiting for ' + self.name + ' to build'
+                    print(error_message)
+                    self.bytes_queue.put(timeout_expired.stdout)
+                    self.bytes_queue.put(error_message.encode())
+                except (TypeError, ValueError):
+                    print(self.name, 'build command misformatted')
+                except OSError:
+                    print(self.name, 'build failed - check "build" in commands.json')
 
     def run(self):
         '''
@@ -255,6 +304,14 @@ class Player():
         '''
         Requests one action from the pokerbot over the socket connection.
         At the end of the round, we request a CheckAction from the pokerbot.
+
+        Args:
+            round_state (RoundState): The current state of the poker round.
+            player_message (list): The message to send to the pokerbot.
+            game_log (list): The log of the game.
+
+        Returns:
+            Action: The action chosen by the pokerbot.
         '''
         legal_actions = round_state.legal_actions() if isinstance(round_state, RoundState) else {CheckAction}
         if self.socketfile is not None and self.game_clock > 0.:
@@ -300,6 +357,18 @@ class Player():
 class Game():
     '''
     Manages logging and the high-level game procedure.
+
+    Attributes:
+    - log: A list to store the game log.
+    - player_messages: A list of lists to store the messages for each player.
+
+    Methods:
+    - __init__(): Initializes the Game object.
+    - log_round_state(players, round_state): Incorporates RoundState information into the game log and player messages.
+    - log_action(name, action, bet_override): Incorporates action information into the game log and player messages.
+    - log_terminal_state(players, round_state): Incorporates TerminalState information into the game log and player messages.
+    - run_round(players): Runs one round of poker.
+    - run(): Runs one game of poker.
     '''
 
     def __init__(self):
@@ -385,35 +454,46 @@ class Game():
             player.bankroll += delta
 
     def run(self):
-        '''
-        Runs one game of poker.
-        '''
-        print('   __  _____________  ___       __           __        __    ')
-        print('  /  |/  /  _/_  __/ / _ \\___  / /_____ ____/ /  ___  / /____')
-        print(' / /|_/ // /  / /   / ___/ _ \\/  \'_/ -_) __/ _ \\/ _ \\/ __(_-<')
-        print('/_/  /_/___/ /_/   /_/   \\___/_/\\_\\\\__/_/ /_.__/\\___/\\__/___/')
-        print()
-        print('Starting the Pokerbots engine...')
-        players = [
-            Player(PLAYER_1_NAME, PLAYER_1_PATH),
-            Player(PLAYER_2_NAME, PLAYER_2_PATH)
-        ]
-        for player in players:
-            player.build()
-            player.run()
-        for round_num in range(1, NUM_ROUNDS + 1):
+            '''
+            Runs one game of poker.
+
+            This method initializes the game engine and executes a single game of poker.
+            It prints the game engine logo, starts the engine, creates player instances,
+            builds and runs each player, runs multiple rounds of the game, logs the game
+            progress, stops the players, and writes the game log to a file.
+
+            Parameters:
+                None
+
+            Returns:
+                None
+            '''
+            print('   __  _____________  ___       __           __        __    ')
+            print('  /  |/  /  _/_  __/ / _ \\___  / /_____ ____/ /  ___  / /____')
+            print(' / /|_/ // /  / /   / ___/ _ \\/  \'_/ -_) __/ _ \\/ _ \\/ __(_-<')
+            print('/_/  /_/___/ /_/   /_/   \\___/_/\\_\\\\__/_/ /_.__/\\___/\\__/___/')
+            print()
+            print('Starting the Pokerbots engine...')
+            players = [
+                Player(PLAYER_1_NAME, PLAYER_1_PATH),
+                Player(PLAYER_2_NAME, PLAYER_2_PATH)
+            ]
+            for player in players:
+                player.build()
+                player.run()
+            for round_num in range(1, NUM_ROUNDS + 1):
+                self.log.append('')
+                self.log.append('Round #' + str(round_num) + STATUS(players))
+                self.run_round(players)
+                players = players[::-1]
             self.log.append('')
-            self.log.append('Round #' + str(round_num) + STATUS(players))
-            self.run_round(players)
-            players = players[::-1]
-        self.log.append('')
-        self.log.append('Final' + STATUS(players))
-        for player in players:
-            player.stop()
-        name = GAME_LOG_FILENAME + '.txt'
-        print('Writing', name)
-        with open(name, 'w') as log_file:
-            log_file.write('\n'.join(self.log))
+            self.log.append('Final' + STATUS(players))
+            for player in players:
+                player.stop()
+            name = GAME_LOG_FILENAME + '.txt'
+            print('Writing', name)
+            with open(name, 'w') as log_file:
+                log_file.write('\n'.join(self.log))
 
 
 if __name__ == '__main__':
